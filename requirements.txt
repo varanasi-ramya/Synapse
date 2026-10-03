@@ -1,0 +1,11 @@
+# Top-level development tooling for the Synapse project.
+#
+# Runtime dependencies for the backend and the load balancer live in their own
+# per-service requirements.txt files (backend/requirements.txt,
+# loadbalancer/requirements.txt) so each container image installs only what it
+# needs. This file is for contributors working on the repo itself.
+#
+# Install with:  pip install -r requirements.txt
+
+pytest==8.3.4
+requests==2.32.3

@@ -1,0 +1,61 @@
+# Synapse - Docker Compose stack
+#
+# Scope of this file: the three origin backends and the shared bridge network.
+#
+# The loadbalancer service is owned by another team member and is NOT defined
+# here. It will be added as a fourth service on the same lb_network, exposing
+# the project entry point as a 8080:8080 port mapping:
+#
+#   loadbalancer:
+#     build: ./loadbalancer
+#     container_name: synapse_lb
+#     ports:
+#       - "8080:8080"
+#     networks:
+#       - lb_network
+#
+# Until that service is merged, reach a backend directly with:
+#   curl http://localhost:8001/  (backend1)
+#   curl http://localhost:8002/  (backend2)
+#   curl http://localhost:8003/  (backend3)
+#
+# No hardcoded container IPs are used anywhere; backends are addressed over
+# lb_network by service name.
+
+services:
+  backend1:
+    build: ./backend
+    container_name: synapse_backend1
+    environment:
+      BACKEND_NAME: backend1
+    ports:
+      - "8001:8000"
+    networks:
+      - lb_network
+    restart: unless-stopped
+
+  backend2:
+    build: ./backend
+    container_name: synapse_backend2
+    environment:
+      BACKEND_NAME: backend2
+    ports:
+      - "8002:8000"
+    networks:
+      - lb_network
+    restart: unless-stopped
+
+  backend3:
+    build: ./backend
+    container_name: synapse_backend3
+    environment:
+      BACKEND_NAME: backend3
+    ports:
+      - "8003:8000"
+    networks:
+      - lb_network
+    restart: unless-stopped
+
+networks:
+  lb_network:
+    driver: bridge
