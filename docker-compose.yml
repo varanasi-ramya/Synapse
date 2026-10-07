@@ -1,3 +1,10 @@
+# Synapse - Docker Compose stack
+#
+# Scope of this file: the three origin backends, the loadbalancer, and the shared bridge network.
+#
+# All services share the lb_network bridge. Backends are addressed by service name
+# via Docker's embedded DNS — no hardcoded IPs anywhere.
+
 version: '3.8'
 
 networks:
@@ -7,21 +14,36 @@ networks:
 services:
   backend1:
     build: ./backend
-    container_name: backend1
+    container_name: synapse_backend1
+    environment:
+      BACKEND_NAME: backend1
+    ports:
+      - "8001:8000"
     networks:
       - lb_network
+    restart: unless-stopped
 
   backend2:
     build: ./backend
-    container_name: backend2
+    container_name: synapse_backend2
+    environment:
+      BACKEND_NAME: backend2
+    ports:
+      - "8002:8000"
     networks:
       - lb_network
+    restart: unless-stopped
 
   backend3:
     build: ./backend
-    container_name: backend3
+    container_name: synapse_backend3
+    environment:
+      BACKEND_NAME: backend3
+    ports:
+      - "8003:8000"
     networks:
       - lb_network
+    restart: unless-stopped
 
   loadbalancer:
     build: ./loadbalancer
@@ -34,3 +56,4 @@ services:
       - backend3
     networks:
       - lb_network
+    restart: unless-stopped
