@@ -2,8 +2,8 @@
 #
 # Synapse load balancer image.
 #
-# Runs the asyncio TCP proxy that distributes connections across backends
-# in round-robin order.
+# Runs the asyncio HTTP Layer 7 proxy that distributes requests across backends
+# in round-robin order. Exposes /stats endpoint for dashboard integration.
 
 FROM python:3.10-slim
 
@@ -14,6 +14,11 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
+
+# Install dependencies first for layer caching.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY lb.py .
 

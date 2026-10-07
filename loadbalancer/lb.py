@@ -1,93 +1,149 @@
-# loadbalancer/lb.py
+"""Synapse Layer 7 Load Balancer.
+
+HTTP/1.1 reverse proxy with round-robin load balancing across backends.
+Exposes a /stats endpoint for dashboard integration per docs/stats_schema.md.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import itertools
-import sys
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
-# Define backend target instances matching docker-compose service names
-BACKENDS = [
-    ("backend1", 8000),
-    ("backend2", 8000),
-    ("backend3", 8000)
-]
+from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp.typedefs import JSONEncoder
 
-# Round-robin iterator cycling through backend target indices (0 -> 1 -> 2 -> 0 ...)
+
+BACKENDS: List[str] = ["backend1", "backend2", "backend3"]
+BACKEND_PORT = 8000
+
 rr_cycle = itertools.cycle(BACKENDS)
 
-# Shared counter dictionary for /stats endpoint (Member 2's dashboard integration)
-stats = {
-    "backend1": 0,
-    "backend2": 0,
-    "backend3": 0,
-    "total_requests": 0
-}
+@dataclass
+class Stats:
+    total_requests: int = 0
+    backend_requests: Dict[str, int] = field(default_factory=lambda: {b: 0 for b in BACKENDS})
+    active_connections: int = 0
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-async def forward_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    """
-    Helper function to stream data continuously from reader to writer until EOF.
-    """
+    async def record_request(self, backend: str) -> None:
+        async with self._lock:
+            self.total_requests += 1
+            self.backend_requests[backend] = self.backend_requests.get(backend, 0) + 1
+
+    async def inc_active(self) -> None:
+        async with self._lock:
+            self.active_connections += 1
+
+    async def dec_active(self) -> None:
+        async with self._lock:
+            self.active_connections = max(0, self.active_connections - 1)
+
+    async def snapshot(self) -> Dict:
+        async with self._lock:
+            return {
+                "total_requests": self.total_requests,
+                "backend_requests": dict(self.backend_requests),
+                "active_connections": self.active_connections,
+                "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            }
+
+
+stats = Stats()
+
+
+async def get_backend_session() -> ClientSession:
+    timeout = ClientTimeout(total=10, connect=3, sock_read=10)
+    return ClientSession(timeout=timeout)
+
+
+def pick_backend() -> str:
+    return next(rr_cycle)
+
+
+async def proxy_handler(request: web.Request) -> web.Response:
+    backend_name = pick_backend()
+    await stats.record_request(backend_name)
+    await stats.inc_active()
+
+    backend_url = f"http://{backend_name}:{BACKEND_PORT}{request.path_qs}"
+
+    start = time.perf_counter()
     try:
-        while True:
-            data = await reader.read(4096)
-            if not data:
-                break
-            writer.write(data)
-            await writer.drain()
-    except Exception:
-        pass
-
-async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
-    """
-    Handles incoming TCP client connections on port 8080.
-    """
-    global stats
-    
-    # 1. Pick next backend in Round-Robin order
-    backend_host, backend_port = next(rr_cycle)
-    print(f"[LB] [->] Routing new connection to {backend_host}:{backend_port}", flush=True)
-
-    try:
-        # 2. Open an upstream TCP socket connection to the selected backend container
-        backend_reader, backend_writer = await asyncio.open_connection(backend_host, backend_port)
-
-        # 3. Increment internal stats counter
-        stats[backend_host] += 1
-        stats["total_requests"] += 1
-
-        # 4. Bidirectional raw byte forwarding using concurrent tasks
-        # Task A: Client -> Backend (Request bytes)
-        # Task B: Backend -> Client (Response bytes)
-        client_to_backend = asyncio.create_task(forward_stream(client_reader, backend_writer))
-        backend_to_client = asyncio.create_task(forward_stream(backend_reader, client_writer))
-
-        # Wait until both streaming directions finish
-        await asyncio.gather(client_to_backend, backend_to_client, return_exceptions=True)
-
-        # Gracefully close backend writer
-        backend_writer.close()
-        await backend_writer.wait_closed()
-
+        async with await get_backend_session() as session:
+            async with session.request(
+                method=request.method,
+                url=backend_url,
+                headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+                data=await request.read() if request.can_read_body else None,
+                allow_redirects=False,
+            ) as resp:
+                body = await resp.read()
+                elapsed = time.perf_counter() - start
+                print(
+                    f"[LB] {request.method} {request.path_qs} -> {backend_name} "
+                    f"{resp.status} ({elapsed*1000:.1f}ms)",
+                    flush=True,
+                )
+                return web.Response(
+                    status=resp.status,
+                    headers=dict(resp.headers),
+                    body=body,
+                )
+    except asyncio.TimeoutError:
+        await stats.dec_active()
+        return web.Response(status=504, text="Gateway Timeout")
     except Exception as e:
-        print(f"[LB Error] Could not connect or forward to {backend_host}:{backend_port} -> {e}", flush=True)
-
+        await stats.dec_active()
+        print(f"[LB Error] {backend_name}: {e}", flush=True)
+        return web.Response(status=502, text="Bad Gateway")
     finally:
-        # Gracefully close client connection
-        client_writer.close()
-        await client_writer.wait_closed()
+        await stats.dec_active()
 
-async def main():
-    # Start non-blocking TCP server listening on port 8080
-    server = await asyncio.start_server(handle_client, '0.0.0.0', 8080)
+
+async def stats_handler(request: web.Request) -> web.Response:
+    snapshot = await stats.snapshot()
+    return web.json_response(snapshot)
+
+
+async def health_handler(request: web.Request) -> web.Response:
+    return web.json_response({"status": "healthy"})
+
+
+async def init_app() -> web.Application:
+    app = web.Application()
+    app.router.add_get("/stats", stats_handler)
+    app.router.add_get("/health", health_handler)
+    app.router.add_route("*", "/{tail:.*}", proxy_handler)
+    return app
+
+
+async def main() -> None:
+    app = await init_app()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+
     print("==================================================", flush=True)
-    print("[LB Started] Listening on TCP 0.0.0.0:8080 ...", flush=True)
-    print(f"[LB Configuration] Active Backends: {BACKENDS}", flush=True)
+    print("[LB Started] Layer 7 HTTP proxy on 0.0.0.0:8080", flush=True)
+    print(f"[LB Config] Backends: {BACKENDS}:{BACKEND_PORT}", flush=True)
+    print("[LB Routes]  GET  /stats   -> dashboard metrics", flush=True)
+    print("[LB Routes]  GET  /health  -> LB health", flush=True)
+    print("[LB Routes]  *    /*       -> round-robin proxy", flush=True)
     print("==================================================", flush=True)
 
-    async with server:
-        await server.serve_forever()
+    try:
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await runner.cleanup()
+        print("\n[LB Shutdown] Server stopped gracefully.", flush=True)
+
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n[LB Shutdown] Server stopped gracefully.")
-        sys.exit(0)
+    asyncio.run(main())
