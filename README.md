@@ -239,7 +239,7 @@ Report only values actually observed on your machine when documenting performanc
 - Chart.js documentation
 
 
-## 🚀 How to Execute & Run
+## How to Execute & Run
 
 ### 1. Start the Backend & Load Balancer Stack (Docker)
 Open your terminal in the root project folder and spin up the Docker Compose stack. This will build and run three backend origin servers (`backend1`, `backend2`, `backend3`) and the load balancer proxy on port `8080`:
