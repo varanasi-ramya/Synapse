@@ -64,6 +64,24 @@ def pick_backend() -> str:
     return next(rr_cycle)
 
 
+@web.middleware
+async def cors_middleware(request: web.Request, handler):
+    if request.method == "OPTIONS":
+        return web.Response(
+            status=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            },
+        )
+    response = await handler(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
 async def proxy_handler(request: web.Request) -> web.Response:
     backend_name = pick_backend()
     await stats.record_request(backend_name)
@@ -114,7 +132,7 @@ async def health_handler(request: web.Request) -> web.Response:
 
 
 async def init_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/stats", stats_handler)
     app.router.add_get("/health", health_handler)
     app.router.add_route("*", "/{tail:.*}", proxy_handler)

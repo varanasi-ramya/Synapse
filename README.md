@@ -237,3 +237,20 @@ Report only values actually observed on your machine when documenting performanc
 - RFC 9110 (HTTP Semantics)
 - Apache Bench documentation
 - Chart.js documentation
+
+
+## 🚀 How to Execute & Run
+
+### 1. Start the Backend & Load Balancer Stack (Docker)
+Open your terminal in the root project folder and spin up the Docker Compose stack. This will build and run three backend origin servers (`backend1`, `backend2`, `backend3`) and the load balancer proxy on port `8080`:
+```bash
+docker compose up --build
+
+```
+### 2. Start the Frontend Dashboard 
+Open a second terminal window and run the following commands to install dependencies and start the Vite development server:
+
+```bash
+cd frontend
+npm install
+npm run dev
